@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#140d38" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Sky Rush" />
+  <title>Sky Rush</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="stage">
+    <!-- canvas is inserted here -->
+
+    <div id="hud" class="hidden">
+      <div class="hud-top">
+        <button id="pauseBtn" class="icon-btn" aria-label="Pause"><span></span><span></span></button>
+        <div class="score-box">
+          <div id="score">0</div>
+          <div class="label">meters</div>
+        </div>
+        <div id="coinBox" class="coin-box"><i class="coin-icon"></i><span id="coins">0</span></div>
+      </div>
+      <div id="powers"></div>
+      <div id="hint">
+        <div class="hint-arrow up">▲</div>
+        <div class="hint-text">Swipe up &amp; down to fly</div>
+        <div class="hint-arrow down">▼</div>
+      </div>
+      <div id="toast"></div>
+    </div>
+
+    <div id="menu" class="overlay">
+      <div class="logo">
+        <span class="logo-sky">SKY</span>
+        <span class="logo-rush">RUSH</span>
+      </div>
+      <div class="menu-stats">
+        <div><span class="k">Best</span><span id="menuBest" class="v">0</span></div>
+        <div><span class="k">Coins</span><span id="menuBank" class="v gold">0</span></div>
+      </div>
+      <div class="menu-bottom">
+        <div class="swipe-demo"><div class="finger"></div></div>
+        <p class="tagline">Swipe up &amp; down to dodge.<br />Grab coins and power-ups!</p>
+        <button id="playBtn" class="btn big">Play</button>
+        <button id="soundBtn" class="btn ghost">Sound: On</button>
+      </div>
+    </div>
+
+    <div id="pause" class="overlay dim hidden">
+      <div class="card">
+        <h2>Paused</h2>
+        <button id="resumeBtn" class="btn big">Resume</button>
+        <button id="restartBtn" class="btn">Restart</button>
+        <button id="soundBtn2" class="btn ghost">Sound: On</button>
+        <button id="quitBtn" class="btn ghost">Main menu</button>
+      </div>
+    </div>
+
+    <div id="over" class="overlay dim hidden">
+      <div class="card">
+        <h2>Crashed!</h2>
+        <div id="newBest" class="badge hidden">New best!</div>
+        <div class="final">
+          <div class="label">Score</div>
+          <div id="finalScore" class="final-score">0</div>
+        </div>
+        <div class="final-row">
+          <div><span class="label">Coins</span><b id="finalCoins" class="gold">0</b></div>
+          <div><span class="label">Best</span><b id="finalBest">0</b></div>
+        </div>
+        <button id="againBtn" class="btn big">Play again</button>
+        <button id="homeBtn" class="btn ghost">Main menu</button>
+      </div>
+    </div>
+
+    <div id="error" class="overlay dim hidden">
+      <div class="card"><h2>Oops</h2><p>Sky Rush needs WebGL. Try a different browser.</p></div>
+    </div>
+  </div>
+  <div id="rotate">Turn your phone upright to play ↻</div>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
