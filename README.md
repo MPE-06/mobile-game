@@ -16,7 +16,14 @@ python3 -m http.server 8080
 # or: npx serve .
 ```
 
-Then open `http://localhost:8080`. To play on a phone, open `http://<your-computer-ip>:8080` while the
+Then open `http://localhost:8080`.
+
+### GitHub Pages
+
+`.github/workflows/pages.yml` publishes the game every time `main` is pushed (or when you run the
+workflow by hand from the Actions tab). One-time setup: in the repo go to **Settings → Pages** and set
+**Source** to **GitHub Actions**. The game is then at `https://<owner>.github.io/<repo>/`.
+Pages on a private repository needs a paid GitHub plan; on a free plan the repository must be public. To play on a phone, open `http://<your-computer-ip>:8080` while the
 phone is on the same Wi-Fi, or host the folder on any static host (GitHub Pages, Netlify, ...). Use
 "Add to Home Screen" to run it full-screen; the web manifest locks it to portrait.
 
