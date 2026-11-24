@@ -1,13 +1,32 @@
 import * as THREE from '../vendor/three.module.min.js';
 import {
-  LANES, BAND, PLAYER_HALF_Y, PLAYER_HALF_Z, SPAWN_AHEAD, DESPAWN_BEHIND, difficultyAt,
+  LANES, COLS, BAND, BAND_X, PLAYER_HALF_X, PLAYER_HALF_Y, PLAYER_HALF_Z, SPAWN_AHEAD, DESPAWN_BEHIND,
+  difficultyAt,
 } from './config.js';
 import { canvasTexture, rand, randInt, pick, lerp, smoothstep, weightedPick } from './utils.js';
 
-const TOP = LANES[0] + BAND; // top edge of the playfield's obstacles
+// The flight area is a 3x3 grid. Cells are indexed row-major: i = row * 3 + col.
+const TOP = LANES[0] + BAND; // top edge of the grid
 const BOTTOM = LANES[2] - BAND;
-const WIDTH = 5.6; // obstacles span the whole view horizontally
-const TUNNEL_GAP = 1.15; // half-height of a tunnel's open corridor
+const RIGHT = COLS[2] + BAND_X; // right edge of the grid
+const WIDTH = RIGHT * 2; // full-width obstacles span every column
+const HEIGHT = TOP - BOTTOM;
+const CELL_W = BAND_X * 2 - 0.08; // small seam between neighbouring panels
+const CELL_H = BAND * 2 - 0.1;
+const TUNNEL_GAP = 1.15; // half-size of a tunnel's open corridor
+const ALL = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+const rowOf = (i) => Math.floor(i / 3);
+const colOf = (i) => i % 3;
+const cellX = (i) => COLS[colOf(i)];
+const cellY = (i) => LANES[rowOf(i)];
+const dist = (a, b) => Math.abs(rowOf(a) - rowOf(b)) + Math.abs(colOf(a) - colOf(b));
+const rowCells = (r) => [r * 3, r * 3 + 1, r * 3 + 2];
+const colCells = (c) => [c, c + 3, c + 6];
+const without = (cells) => ALL.filter((i) => !cells.includes(i));
+
+// Coins are a reward, not wallpaper: trails are optional and spaced out.
+const COIN_TRAIL_CHANCE = 0.6;
+const COIN_SPACING = 3.4;
 
 // ---------- shared textures / materials / geometry ----------
 function makeAssets() {
@@ -199,6 +218,7 @@ export class Track {
     };
   }
 
+
   reset() {
     for (const e of this.entities) this.scene.remove(e.group);
     for (const c of this.coins) this.releaseCoin(c);
@@ -208,7 +228,7 @@ export class Track {
     this.powers = [];
     this.cursor = 75; // where the next pattern starts (absolute distance)
     this.trailStart = 14;
-    this.trailLane = 1;
+    this.trailCell = 4; // centre cell
     this.count = 0;
     this.nextPowerD = rand(380, 520);
     this.lastType = null;
@@ -236,142 +256,148 @@ export class Track {
     this.coinPool.push(c.mesh);
   }
 
-  addCoin(absD, y) {
+  addCoin(absD, x, y) {
     const mesh = this.acquireCoin();
-    mesh.position.set(0, y, -1e4);
-    this.coins.push({ absD, y, mesh, pulled: false });
+    mesh.position.set(x, y, -1e4);
+    this.coins.push({ absD, x, y, mesh, pulled: false });
   }
 
-  addPower(absD, lane, type) {
+  addPower(absD, cell, type) {
     const mesh = this.makePowerMesh(type);
-    mesh.position.set(0, LANES[lane], -1e4);
+    mesh.position.set(cellX(cell), cellY(cell), -1e4);
     this.scene.add(mesh);
-    this.powers.push({ absD, y: LANES[lane], mesh, type });
+    this.powers.push({ absD, x: cellX(cell), y: cellY(cell), mesh, type });
   }
 
-  // Coins that guide the player from one lane to the next.
-  coinTrail(a, b, la, lb, { force = false, spacing = 3 } = {}) {
+  // Coins that guide the player from one cell to the next.
+  coinTrail(a, b, ca, cb, { force = false, spacing = COIN_SPACING, chance = COIN_TRAIL_CHANCE } = {}) {
     if (b - a < 5) return;
     const wantPower = a + (b - a) / 2 > this.nextPowerD && b - a > 14;
-    if (!force && !wantPower && Math.random() > 0.7) return;
-    const n = Math.floor((b - a) / spacing);
-    const ya = LANES[la];
-    const yb = LANES[lb];
+    if (!force && !wantPower && Math.random() > chance) return;
+    const n = Math.max(1, Math.floor((b - a) / spacing));
+    const xa = cellX(ca);
+    const xb = cellX(cb);
+    const ya = cellY(ca);
+    const yb = cellY(cb);
     const powerAt = wantPower ? Math.floor(n * 0.65) : -1;
     for (let i = 0; i <= n; i++) {
       const f = i / n;
       const d = a + (b - a) * f;
-      const y = lerp(ya, yb, smoothstep(0.05, 0.5, f));
-      if (i === powerAt) {
+      const k = smoothstep(0.05, 0.5, f);
+      if (i === powerAt && k === 1) {
         const types = [['shield', 0.4], ['magnet', 0.35], ['boost', 0.25]];
-        if (Math.abs(y - yb) < 0.01) {
-          this.addPower(d, lb, weightedPick(types));
-          this.nextPowerD = d + rand(520, 900);
-          continue;
-        }
+        this.addPower(d, cb, weightedPick(types));
+        this.nextPowerD = d + rand(520, 900);
+        continue;
       }
-      this.addCoin(d, y);
+      this.addCoin(d, lerp(xa, xb, k), lerp(ya, yb, k));
     }
   }
 
   // ---------- obstacle builders ----------
-  // Group blocked lanes into contiguous spans: [0,1] -> [[0,1]], [0,2] -> [[0],[2]].
-  spans(blocked) {
-    const s = [...blocked].sort();
-    const out = [];
-    for (const l of s) {
-      const last = out[out.length - 1];
-      if (last && last[last.length - 1] === l - 1) last.push(l);
-      else out.push([l]);
-    }
-    return out;
-  }
-
-  spanRange(span) {
-    return [LANES[span[span.length - 1]] - BAND, LANES[span[0]] + BAND]; // [y0, y1]
-  }
-
-  buildBarrier(blocked) {
+  // Energy panels / floating rocks on individual cells.
+  buildCells(blocked, style) {
     const g = new THREE.Group();
     const colliders = [];
-    for (const span of this.spans(blocked)) {
-      const [y0, y1] = this.spanRange(span);
-      const h = y1 - y0;
-      const cy = (y0 + y1) / 2;
-      const panel = this.box(g, this.a.hazard, WIDTH, h, 0.5, 0, cy, 0);
-      panel.material = this.a.hazard;
-      this.box(g, this.a.cyan, WIDTH + 0.2, 0.14, 0.6, 0, y1, 0);
-      this.box(g, this.a.cyan, WIDTH + 0.2, 0.14, 0.6, 0, y0, 0);
-      this.box(g, this.a.pink, 0.16, h, 0.62, -WIDTH / 2, cy, 0);
-      this.box(g, this.a.pink, 0.16, h, 0.62, WIDTH / 2, cy, 0);
-      colliders.push({ y0, y1, d0: -0.3, d1: 0.3 });
-    }
-    return { g, colliders, color: 0xff2d95 };
-  }
-
-  buildLaser(blocked) {
-    const g = new THREE.Group();
-    const colliders = [];
-    const ph = TOP - BOTTOM + 1.2;
-    for (const s of [-1, 1]) {
-      this.box(g, this.a.metal, 0.45, ph, 0.45, (WIDTH / 2 + 0.25) * s, 0, 0);
-      this.box(g, this.a.red, 0.1, ph, 0.47, (WIDTH / 2 + 0.25) * s - 0.18 * s, 0, 0);
-    }
-    const coreGeo = this.geo('laserCore', () => new THREE.CylinderGeometry(0.05, 0.05, WIDTH + 0.4, 6).rotateZ(Math.PI / 2));
-    const glowGeo = this.geo('laserGlow', () => new THREE.CylinderGeometry(0.12, 0.12, WIDTH + 0.4, 8).rotateZ(Math.PI / 2));
-    const beams = [];
-    for (const l of blocked) {
-      for (const off of [-0.72, 0, 0.72]) {
-        const core = new THREE.Mesh(coreGeo, this.a.laserCore);
-        const glow = new THREE.Mesh(glowGeo, this.a.laserGlow);
-        core.position.y = glow.position.y = LANES[l] + off;
-        g.add(core, glow);
-        beams.push(glow);
+    const rock = style === 'rock';
+    const rockGeo = this.geo('rock', () => new THREE.DodecahedronGeometry(1, 0));
+    const capGeo = this.geo('cap', () => new THREE.CylinderGeometry(1, 0.9, 0.3, 8));
+    for (const i of blocked) {
+      const x = cellX(i);
+      const y = cellY(i);
+      if (rock) {
+        const r = new THREE.Mesh(rockGeo, this.a.rock);
+        r.scale.set(BAND_X * 1.05, 0.95, 1.3);
+        r.rotation.y = rand(0, Math.PI);
+        r.position.set(x, y - 0.12, 0);
+        g.add(r);
+        const cap = new THREE.Mesh(capGeo, this.a.grass);
+        cap.scale.set(BAND_X * 0.9, 1, 1.1);
+        cap.position.set(x, y + 0.72, 0);
+        g.add(cap);
+        for (let f = 0; f < 2; f++) this.box(g, this.a.flower, 0.12, 0.12, 0.12, x + rand(-0.6, 0.6), y + 0.92, rand(-0.6, 0.6));
+        colliders.push({ x0: x - BAND_X + 0.1, x1: x + BAND_X - 0.1, y0: y - BAND + 0.1, y1: y + BAND - 0.15, d0: -1.1, d1: 1.1 });
+      } else {
+        this.box(g, this.a.hazard, CELL_W, CELL_H, 0.5, x, y, 0);
+        colliders.push({ x0: x - BAND_X, x1: x + BAND_X, y0: y - BAND, y1: y + BAND, d0: -0.3, d1: 0.3 });
       }
-      // Emitter nodes on the pylons
-      for (const s of [-1, 1]) this.box(g, this.a.red, 0.55, 0.3, 0.55, (WIDTH / 2 + 0.25) * s, LANES[l], 0);
-      colliders.push({ y0: LANES[l] - BAND + 0.15, y1: LANES[l] + BAND - 0.15, d0: -0.25, d1: 0.25 });
+    }
+    if (!rock) {
+      // Neon frame around the whole wall so it reads as one structure.
+      this.box(g, this.a.cyan, WIDTH + 0.2, 0.12, 0.55, 0, TOP + 0.06, 0);
+      this.box(g, this.a.cyan, WIDTH + 0.2, 0.12, 0.55, 0, BOTTOM - 0.06, 0);
+      this.box(g, this.a.pink, 0.14, HEIGHT + 0.24, 0.57, -RIGHT - 0.07, 0, 0);
+      this.box(g, this.a.pink, 0.14, HEIGHT + 0.24, 0.57, RIGHT + 0.07, 0, 0);
+    }
+    const update = rock ? (t) => (g.rotation.z = Math.sin(t * 1.1) * 0.02) : null;
+    return { g, colliders, color: rock ? 0x8a6650 : 0xff2d95, update };
+  }
+
+  // Laser gate: beams across whole rows and/or down whole columns.
+  buildLaser(rows, cols) {
+    const g = new THREE.Group();
+    const colliders = [];
+    // Frame
+    for (const s of [-1, 1]) {
+      this.box(g, this.a.metal, 0.4, HEIGHT + 1.2, 0.4, (RIGHT + 0.25) * s, 0, 0);
+      this.box(g, this.a.metal, WIDTH + 0.9, 0.4, 0.4, 0, s > 0 ? TOP + 0.35 : BOTTOM - 0.35, 0);
+    }
+    this.box(g, this.a.red, 0.1, HEIGHT + 1.2, 0.42, -RIGHT - 0.07, 0, 0);
+    this.box(g, this.a.red, 0.1, HEIGHT + 1.2, 0.42, RIGHT + 0.07, 0, 0);
+    const hCore = this.geo('laserCoreH', () => new THREE.CylinderGeometry(0.05, 0.05, WIDTH + 0.4, 6).rotateZ(Math.PI / 2));
+    const hGlow = this.geo('laserGlowH', () => new THREE.CylinderGeometry(0.12, 0.12, WIDTH + 0.4, 8).rotateZ(Math.PI / 2));
+    const vCore = this.geo('laserCoreV', () => new THREE.CylinderGeometry(0.05, 0.05, HEIGHT + 0.6, 6));
+    const vGlow = this.geo('laserGlowV', () => new THREE.CylinderGeometry(0.12, 0.12, HEIGHT + 0.6, 8));
+    const beams = [];
+    const beam = (core, glow, x, y) => {
+      const c = new THREE.Mesh(core, this.a.laserCore);
+      const gl = new THREE.Mesh(glow, this.a.laserGlow);
+      c.position.set(x, y, 0);
+      gl.position.set(x, y, 0);
+      gl.userData.horizontal = glow === hGlow;
+      g.add(c, gl);
+      beams.push(gl);
+    };
+    for (const r of rows) {
+      for (const off of [-0.72, 0, 0.72]) beam(hCore, hGlow, 0, LANES[r] + off);
+      for (const s of [-1, 1]) this.box(g, this.a.red, 0.55, 0.3, 0.55, (RIGHT + 0.25) * s, LANES[r], 0);
+      colliders.push({ x0: -RIGHT, x1: RIGHT, y0: LANES[r] - BAND + 0.15, y1: LANES[r] + BAND - 0.15, d0: -0.25, d1: 0.25 });
+    }
+    for (const c of cols) {
+      for (const off of [-0.66, 0, 0.66]) beam(vCore, vGlow, COLS[c] + off, 0);
+      for (const s of [-1, 1]) this.box(g, this.a.red, 0.3, 0.55, 0.55, COLS[c], (s > 0 ? TOP + 0.35 : BOTTOM - 0.35), 0);
+      colliders.push({ x0: COLS[c] - BAND_X + 0.12, x1: COLS[c] + BAND_X - 0.12, y0: BOTTOM, y1: TOP, d0: -0.25, d1: 0.25 });
     }
     const update = (t) => {
       const k = 1 + Math.sin(t * 30) * 0.15;
-      for (const b of beams) b.scale.set(1, k, k);
+      for (const b of beams) {
+        if (b.userData.horizontal) b.scale.set(1, k, k);
+        else b.scale.set(k, 1, k);
+      }
     };
     return { g, colliders, color: 0xff2a4a, update };
   }
 
-  buildRock(blocked) {
+  // A bar (or spiky drone) that slides between two adjacent rows ('y'),
+  // or a pillar that slides between two adjacent columns ('x').
+  buildMover(axis, pair, drone) {
     const g = new THREE.Group();
-    const colliders = [];
-    const rockGeo = this.geo('rock', () => new THREE.DodecahedronGeometry(1, 0));
-    const capGeo = this.geo('cap', () => new THREE.CylinderGeometry(1, 0.9, 0.3, 8));
-    for (const l of blocked) {
-      const y = LANES[l];
-      const r = new THREE.Mesh(rockGeo, this.a.rock);
-      r.scale.set(WIDTH / 2, 0.95, 1.4);
-      r.rotation.y = rand(0, Math.PI);
-      r.position.y = y - 0.12;
-      g.add(r);
-      const cap = new THREE.Mesh(capGeo, this.a.grass);
-      cap.scale.set(WIDTH / 2 - 0.25, 1, 1.25);
-      cap.position.y = y + 0.72;
-      g.add(cap);
-      for (let i = 0; i < 4; i++) this.box(g, this.a.flower, 0.12, 0.12, 0.12, rand(-2, 2), y + 0.92, rand(-0.8, 0.8));
-      colliders.push({ y0: y - BAND + 0.1, y1: y + BAND - 0.15, d0: -1.2, d1: 1.2 });
-    }
-    return { g, colliders, color: 0x8a6650, update: (t) => (g.rotation.z = Math.sin(t * 1.1) * 0.03) };
-  }
-
-  // A bar (or spiky drone) that slides between two adjacent lanes.
-  buildMover(pair, drone) {
-    const g = new THREE.Group();
-    const yTop = LANES[pair[0]];
-    const yBot = LANES[pair[1]];
-    const mid = (yTop + yBot) / 2;
-    const amp = (yTop - yBot) / 2;
+    const vert = axis === 'y';
+    const P = vert ? LANES : COLS;
+    const a = P[pair[0]];
+    const b = P[pair[1]];
+    const mid = (a + b) / 2;
+    const amp = (a - b) / 2;
+    const span = Math.abs(a - b);
     // Rails that telegraph the travel range.
     for (const s of [-1, 1]) {
-      this.box(g, this.a.metal, 0.3, yTop - yBot + 2.4, 0.3, (WIDTH / 2 + 0.2) * s, mid, 0);
-      this.box(g, this.a.amber, 0.08, yTop - yBot + 2.2, 0.32, (WIDTH / 2 + 0.2) * s - 0.12 * s, mid, 0);
+      if (vert) {
+        this.box(g, this.a.metal, 0.3, span + 2.4, 0.3, (RIGHT + 0.2) * s, mid, 0);
+        this.box(g, this.a.amber, 0.08, span + 2.2, 0.32, (RIGHT + 0.2) * s - 0.12 * s, mid, 0);
+      } else {
+        this.box(g, this.a.metal, span + 2.4, 0.3, 0.3, mid, s > 0 ? TOP + 0.2 : BOTTOM - 0.2, 0);
+        this.box(g, this.a.amber, span + 2.2, 0.08, 0.32, mid, s > 0 ? TOP + 0.08 : BOTTOM - 0.08, 0);
+      }
     }
     const mover = new THREE.Group();
     g.add(mover);
@@ -392,210 +418,274 @@ export class Track {
         mover.add(sp);
       }
       // Arms that connect it to the rails
-      this.box(mover, this.a.metal, WIDTH, 0.14, 0.14, 0, 0, 0);
+      if (vert) this.box(mover, this.a.metal, WIDTH, 0.14, 0.14, 0, 0, 0);
+      else this.box(mover, this.a.metal, 0.14, HEIGHT, 0.14, 0, 0, 0);
     } else {
       half = 0.75;
-      this.box(mover, this.a.yellow, WIDTH, 1.5, 0.7, 0, 0, 0);
-      for (const s of [-1, 1]) lights.push(this.box(mover, this.a.red, 0.3, 0.3, 0.75, (WIDTH / 2 - 0.4) * s, 0, 0));
+      if (vert) this.box(mover, this.a.yellow, WIDTH, 1.5, 0.7, 0, 0, 0);
+      else this.box(mover, this.a.yellow, 1.5, HEIGHT, 0.7, 0, 0, 0);
+      for (const s of [-1, 1]) {
+        const off = vert ? [(RIGHT - 0.4) * s, 0] : [0, (TOP - 0.4) * s];
+        lights.push(this.box(mover, this.a.red, 0.3, 0.3, 0.75, off[0], off[1], 0));
+      }
     }
+    // Drones only block their own cell on the cross axis: they sit in the centre.
     const omega = rand(2.6, 3.4);
     const phase = rand(0, Math.PI * 2);
-    const col = { y0: 0, y1: 0, d0: -0.5, d1: 0.5 };
+    const col = vert
+      ? { x0: drone ? -half : -RIGHT, x1: drone ? half : RIGHT, y0: 0, y1: 0, d0: -0.5, d1: 0.5 }
+      : { x0: 0, x1: 0, y0: drone ? -half : BOTTOM, y1: drone ? half : TOP, d0: -0.5, d1: 0.5 };
+    const armCol = drone
+      ? (vert ? { x0: -RIGHT, x1: RIGHT, y0: 0, y1: 0, d0: -0.1, d1: 0.1 } : { x0: 0, x1: 0, y0: BOTTOM, y1: TOP, d0: -0.1, d1: 0.1 })
+      : null;
     const update = (t) => {
-      const y = mid + amp * Math.sin(t * omega + phase);
-      mover.position.y = y;
-      col.y0 = y - half;
-      col.y1 = y + half;
-      if (drone) mover.rotation.set(t * 2, t * 3, 0);
+      const p = mid + amp * Math.sin(t * omega + phase);
+      if (vert) {
+        mover.position.y = p;
+        col.y0 = p - half;
+        col.y1 = p + half;
+        if (armCol) { armCol.y0 = p - 0.07; armCol.y1 = p + 0.07; }
+      } else {
+        mover.position.x = p;
+        col.x0 = p - half;
+        col.x1 = p + half;
+        if (armCol) { armCol.x0 = p - 0.07; armCol.x1 = p + 0.07; }
+      }
+      if (drone) mover.children[0].rotation.set(t * 2, t * 3, 0);
       for (const l of lights) l.visible = Math.sin(t * 14) > 0;
     };
     update(0);
-    return { g, colliders: [col], color: drone ? 0xff2a4a : 0xffcc1f, update, range: [yBot - half, yTop + half] };
+    const colliders = armCol ? [col, armCol] : [col];
+    return { g, colliders, color: drone ? 0xff2a4a : 0xffcc1f, update };
   }
 
-  // Enclosed tunnel where only one lane is open.
+  // Enclosed tunnel where only one cell is open.
   buildTunnel(open, len) {
     const g = new THREE.Group();
     const colliders = [];
     const a = this.a;
-    const oy = LANES[open];
+    const ox = cellX(open);
+    const oy = cellY(open);
     const roof = TOP + 0.4;
     const floor = BOTTOM - 0.4;
-    const fills = [];
-    if (oy + TUNNEL_GAP < roof) fills.push([oy + TUNNEL_GAP, roof]);
-    if (oy - TUNNEL_GAP > floor) fills.push([floor, oy - TUNNEL_GAP]);
-    for (const [y0, y1] of fills) {
+    const wall = RIGHT + 0.4;
+    const fills = []; // [x0, x1, y0, y1]
+    if (oy + TUNNEL_GAP < roof) fills.push([-wall, wall, oy + TUNNEL_GAP, roof]);
+    if (oy - TUNNEL_GAP > floor) fills.push([-wall, wall, floor, oy - TUNNEL_GAP]);
+    if (ox - TUNNEL_GAP > -wall) fills.push([-wall, ox - TUNNEL_GAP, oy - TUNNEL_GAP, oy + TUNNEL_GAP]);
+    if (ox + TUNNEL_GAP < wall) fills.push([ox + TUNNEL_GAP, wall, oy - TUNNEL_GAP, oy + TUNNEL_GAP]);
+    for (const [x0, x1, y0, y1] of fills) {
+      const w = x1 - x0;
       const h = y1 - y0;
-      const m = new THREE.Mesh(this.geo(`slab${h.toFixed(2)}|${len.toFixed(1)}`, () => {
-        const geo = new THREE.BoxGeometry(WIDTH, h, len);
+      const m = new THREE.Mesh(this.geo(`slab${w.toFixed(2)}|${h.toFixed(2)}|${len.toFixed(1)}`, () => {
+        const geo = new THREE.BoxGeometry(w, h, len);
         const uv = geo.attributes.uv;
         for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * Math.max(1, Math.round(len / 4)), uv.getY(i));
         return geo;
       }), a.panel);
-      m.position.set(0, (y0 + y1) / 2, -len / 2);
+      m.position.set((x0 + x1) / 2, (y0 + y1) / 2, -len / 2);
       g.add(m);
       // Chevron warning on the entrance face
-      const face = new THREE.Mesh(this.geo(`face${h.toFixed(2)}`, () => new THREE.PlaneGeometry(WIDTH, h)), a.chevron);
-      face.position.set(0, (y0 + y1) / 2, 0.02);
+      const face = new THREE.Mesh(this.geo(`face${w.toFixed(2)}|${h.toFixed(2)}`, () => new THREE.PlaneGeometry(w, h)), a.chevron);
+      face.position.set((x0 + x1) / 2, (y0 + y1) / 2, 0.02);
       g.add(face);
-      colliders.push({ y0, y1, d0: 0, d1: len });
+      colliders.push({ x0, x1, y0, y1, d0: 0, d1: len });
     }
     // Roof & floor plates (always present so it reads as a tunnel)
-    this.box(g, a.metal, WIDTH + 0.6, 0.35, len, 0, roof + 0.17, -len / 2);
-    this.box(g, a.metal, WIDTH + 0.6, 0.35, len, 0, floor - 0.17, -len / 2);
+    this.box(g, a.metal, wall * 2 + 0.3, 0.35, len, 0, roof + 0.17, -len / 2);
+    this.box(g, a.metal, wall * 2 + 0.3, 0.35, len, 0, floor - 0.17, -len / 2);
     // Glass side walls
     for (const s of [-1, 1]) {
-      const wall = new THREE.Mesh(this.geo(`glass${len.toFixed(1)}`, () => new THREE.PlaneGeometry(len, roof - floor)), a.glass);
-      wall.rotation.y = Math.PI / 2;
-      wall.position.set((WIDTH / 2 + 0.25) * s, (roof + floor) / 2, -len / 2);
-      g.add(wall);
-      // Guide lights along the open corridor
-      this.box(g, a.cyan, 0.08, 0.08, len, (WIDTH / 2) * s, oy + TUNNEL_GAP - 0.05, -len / 2);
-      this.box(g, a.cyan, 0.08, 0.08, len, (WIDTH / 2) * s, oy - TUNNEL_GAP + 0.05, -len / 2);
+      const glass = new THREE.Mesh(this.geo(`glass${len.toFixed(1)}`, () => new THREE.PlaneGeometry(len, roof - floor)), a.glass);
+      glass.rotation.y = Math.PI / 2;
+      glass.position.set((wall + 0.05) * s, (roof + floor) / 2, -len / 2);
+      g.add(glass);
+    }
+    // Guide lights along the four edges of the open corridor
+    for (const sx of [-1, 1]) {
+      for (const sy of [-1, 1]) {
+        this.box(g, a.cyan, 0.08, 0.08, len, ox + (TUNNEL_GAP - 0.05) * sx, oy + (TUNNEL_GAP - 0.05) * sy, -len / 2);
+      }
     }
     // Glowing ribs
     const ribGeo = this.geo('rib', () => new THREE.RingGeometry(0.93, 1, 4, 1).rotateZ(Math.PI / 4));
-    const ribs = [];
     for (let z = 0; z <= len; z += 5) {
       const rib = new THREE.Mesh(ribGeo, a.ribGlow);
-      rib.scale.set((WIDTH + 0.8) / 1.41, (roof - floor + 0.8) / 1.41, 1);
+      rib.scale.set((wall * 2 + 0.8) / 1.41, (roof - floor + 0.8) / 1.41, 1);
       rib.position.set(0, (roof + floor) / 2, -z);
       g.add(rib);
-      ribs.push(rib);
     }
     return { g, colliders, color: 0x49f2ff, smashable: false };
   }
 
   // ---------- pattern generation ----------
-  placeRow(absD, blocked, style) {
-    const s = style || this.rowStyle(blocked);
-    const built = s === 'laser' ? this.buildLaser(blocked) : s === 'rock' ? this.buildRock(blocked) : this.buildBarrier(blocked);
+  placeWall(absD, blocked, style) {
+    const built = this.buildCells(blocked, style || (Math.random() < 0.3 ? 'rock' : 'barrier'));
     this.addEntity(absD, 1.2, built.g, built.colliders, { color: built.color, update: built.update });
   }
 
-  rowStyle(blocked) {
-    if (blocked.length === 1 && Math.random() < 0.3) return 'rock';
-    return Math.random() < 0.45 ? 'laser' : 'barrier';
+  // Full rows / columns can be walls or laser gates.
+  placeLines(absD, rows, cols, style) {
+    const s = style || (Math.random() < 0.5 ? 'laser' : 'barrier');
+    if (s === 'laser') {
+      const built = this.buildLaser(rows, cols);
+      this.addEntity(absD, 1.2, built.g, built.colliders, { color: built.color, update: built.update });
+    } else {
+      const blocked = new Set();
+      for (const r of rows) rowCells(r).forEach((i) => blocked.add(i));
+      for (const c of cols) colCells(c).forEach((i) => blocked.add(i));
+      this.placeWall(absD, [...blocked], 'barrier');
+    }
   }
 
-  // Pick a free lane, sometimes staying put but usually making the player move.
-  chooseLane(free) {
-    const stay = free.includes(this.trailLane) && Math.random() < 0.35;
-    if (stay) return this.trailLane;
-    const others = free.filter((l) => l !== this.trailLane);
-    return others.length ? pick(others) : this.trailLane;
+  // Pick a free cell to aim for. Sometimes stay put, but usually make the
+  // player move; never ask for more than `maxDist` steps at once.
+  chooseCell(free, maxDist = 2) {
+    if (free.includes(this.trailCell) && Math.random() < 0.3) return this.trailCell;
+    let near = free.filter((i) => i !== this.trailCell && dist(i, this.trailCell) <= maxDist);
+    if (!near.length) near = free.filter((i) => dist(i, this.trailCell) <= maxDist);
+    if (!near.length) near = free;
+    return pick(near);
   }
 
-  enter(lane) {
-    this.coinTrail(this.trailStart + 2.5, this.cursor - 2.5, this.trailLane, lane);
+  enter(cell) {
+    this.coinTrail(this.trailStart + 2.5, this.cursor - 2.5, this.trailCell, cell);
   }
 
-  finish(endD, lane, gapDist) {
+  finish(endD, cell, gapDist) {
     this.trailStart = endD;
-    this.trailLane = lane;
+    this.trailCell = cell;
     this.cursor = endD + gapDist;
+  }
+
+  // Random holes for a wall: the first one is always within reach.
+  holes(count, maxDist = 2) {
+    const first = this.chooseCell(ALL, maxDist);
+    const rest = ALL.filter((i) => i !== first).sort(() => Math.random() - 0.5);
+    return [first, ...rest.slice(0, count - 1)];
   }
 
   generate(speed) {
     const d = difficultyAt(this.cursor);
     const n = this.count++;
     let type;
-    if (n < 3) type = 'single';
+    if (n < 2) type = 'row';
+    else if (n === 2) type = 'column';
     else {
       type = weightedPick([
-        ['single', Math.max(0.3, 1 - 0.8 * d)],
-        ['double', 0.35 + 0.8 * d],
-        ['mover', n > 4 ? 0.25 + 0.45 * d : 0],
-        ['tunnel', n > 5 ? 0.22 + 0.25 * d : 0],
-        ['chain', d > 0.2 ? 0.6 * d : 0],
-        ['zigzag', d > 0.35 ? 0.45 * d : 0],
+        ['row', Math.max(0.25, 0.8 - 0.5 * d)],
+        ['column', Math.max(0.25, 0.7 - 0.4 * d)],
+        ['double', 0.3 + 0.5 * d],
+        ['wall', n > 3 ? 0.35 + 0.6 * d : 0],
+        ['mover', n > 4 ? 0.25 + 0.4 * d : 0],
+        ['tunnel', n > 5 ? 0.2 + 0.25 * d : 0],
+        ['chain', d > 0.2 ? 0.5 * d : 0],
+        ['zigzag', d > 0.35 ? 0.4 * d : 0],
         ['rest', this.lastType === 'rest' ? 0 : 0.12],
       ]);
     }
     this.lastType = type;
-    const gapT = lerp(1.25, 0.62, d) + rand(0, 0.3);
+    const gapT = lerp(1.25, 0.65, d) + rand(0, 0.3);
     const gap = Math.max(14, speed * gapT);
-    const all = [0, 1, 2];
 
     switch (type) {
-      case 'single': {
-        const blocked = randInt(0, 2);
-        const lane = this.chooseLane(all.filter((l) => l !== blocked));
-        this.enter(lane);
-        this.placeRow(this.cursor, [blocked]);
-        this.finish(this.cursor + 1, lane, gap);
+      case 'row':
+      case 'column': {
+        const k = randInt(0, 2);
+        const line = type === 'row' ? rowCells(k) : colCells(k);
+        const cell = this.chooseCell(without(line));
+        this.enter(cell);
+        this.placeLines(this.cursor, type === 'row' ? [k] : [], type === 'column' ? [k] : []);
+        this.finish(this.cursor + 1, cell, gap);
         break;
       }
       case 'double': {
-        const lane = this.chooseLane(all);
-        this.enter(lane);
-        this.placeRow(this.cursor, all.filter((l) => l !== lane));
-        this.finish(this.cursor + 1, lane, gap);
+        // Two rows or two columns blocked: one line of three cells stays open.
+        const cell = this.chooseCell(ALL);
+        const byRow = Math.random() < 0.5;
+        const keep = byRow ? rowOf(cell) : colOf(cell);
+        const lines = [0, 1, 2].filter((l) => l !== keep);
+        this.enter(cell);
+        this.placeLines(this.cursor, byRow ? lines : [], byRow ? [] : lines);
+        this.finish(this.cursor + 1, cell, gap);
+        break;
+      }
+      case 'wall': {
+        const count = d < 0.35 ? randInt(3, 4) : d < 0.7 ? randInt(2, 3) : randInt(1, 2);
+        const open = this.holes(count);
+        const cell = open[0];
+        this.enter(cell);
+        this.placeWall(this.cursor, without(open));
+        this.finish(this.cursor + 1, cell, gap);
         break;
       }
       case 'chain': {
         const k = randInt(2, 3 + Math.round(d));
-        const rowGap = Math.max(13, speed * lerp(0.9, 0.58, d));
-        const style = Math.random() < 0.5 ? 'laser' : 'barrier';
-        let lane = this.chooseLane(all);
-        this.enter(lane);
+        const rowGap = Math.max(14, speed * lerp(0.9, 0.62, d));
+        const style = Math.random() < 0.3 ? 'rock' : 'barrier';
+        let open = this.holes(randInt(1, 2));
+        this.enter(open[0]);
         for (let i = 0; i < k; i++) {
-          this.placeRow(this.cursor, all.filter((l) => l !== lane), style);
+          this.placeWall(this.cursor, without(open), style);
           if (i === k - 1) break;
-          const next = pick(all.filter((l) => l !== lane));
-          this.coinTrail(this.cursor + 2, this.cursor + rowGap - 2, lane, next, { force: true });
+          const from = open[0];
+          this.trailCell = from;
+          open = this.holes(randInt(1, 2));
+          if (open[0] === from) open[0] = pick(ALL.filter((c) => dist(c, from) === 1));
+          this.coinTrail(this.cursor + 2, this.cursor + rowGap - 2, from, open[0], { force: true });
           this.cursor += rowGap;
-          lane = next;
         }
-        this.finish(this.cursor + 1, lane, gap);
+        this.finish(this.cursor + 1, open[0], gap);
         break;
       }
       case 'mover': {
+        const axis = Math.random() < 0.5 ? 'y' : 'x';
         const pair = Math.random() < 0.5 ? [0, 1] : [1, 2];
-        const lane = all.find((l) => !pair.includes(l));
-        this.enter(lane);
-        const built = this.buildMover(pair, Math.random() < 0.45);
-        this.addEntity(this.cursor, 1, built.g, built.colliders, { color: built.color, update: built.update, range: built.range });
-        this.finish(this.cursor + 1, lane, gap);
+        const freeLine = [0, 1, 2].find((l) => !pair.includes(l));
+        const cell = this.chooseCell(axis === 'y' ? rowCells(freeLine) : colCells(freeLine));
+        this.enter(cell);
+        const built = this.buildMover(axis, pair, Math.random() < 0.45);
+        this.addEntity(this.cursor, 1, built.g, built.colliders, { color: built.color, update: built.update });
+        this.finish(this.cursor + 1, cell, gap);
         break;
       }
       case 'tunnel': {
-        const lane = this.chooseLane(all);
+        const cell = this.chooseCell(ALL);
         const len = Math.round(Math.max(24, speed * lerp(0.9, 1.5, d)));
-        this.enter(lane);
-        const built = this.buildTunnel(lane, len);
+        this.enter(cell);
+        const built = this.buildTunnel(cell, len);
         this.addEntity(this.cursor, len, built.g, built.colliders, { color: built.color, smashable: false });
-        this.coinTrail(this.cursor + 2, this.cursor + len - 1, lane, lane, { force: true, spacing: 2.6 });
-        this.finish(this.cursor + len, lane, gap);
+        this.coinTrail(this.cursor + 2, this.cursor + len - 1, cell, cell, { chance: 0.7 });
+        this.finish(this.cursor + len, cell, gap);
         break;
       }
       case 'zigzag': {
         const k = randInt(3, 4);
         const secLen = Math.round(Math.max(12, speed * 0.42));
-        const between = Math.max(13, speed * lerp(0.6, 0.45, d));
-        let lane = this.chooseLane(all);
-        this.enter(lane);
+        const between = Math.max(13, speed * lerp(0.65, 0.5, d));
+        let cell = this.chooseCell(ALL);
+        this.enter(cell);
         for (let i = 0; i < k; i++) {
-          const built = this.buildTunnel(lane, secLen);
+          const built = this.buildTunnel(cell, secLen);
           this.addEntity(this.cursor, secLen, built.g, built.colliders, { color: built.color, smashable: false });
-          this.coinTrail(this.cursor + 1.5, this.cursor + secLen - 1, lane, lane, { force: true, spacing: 2.6 });
           if (i === k - 1) break;
-          const next = lane === 1 ? pick([0, 2]) : 1;
+          const next = pick(ALL.filter((c) => dist(c, cell) === 1));
           const s = this.cursor + secLen;
-          this.coinTrail(s + 1.5, s + between - 1.5, lane, next, { force: true, spacing: 2.6 });
+          // Coins mark each turn of the passage.
+          this.coinTrail(s + 1.5, s + between - 1.5, cell, next, { force: true });
           this.cursor = s + between;
-          lane = next;
+          cell = next;
         }
-        this.finish(this.cursor + secLen, lane, gap);
+        this.finish(this.cursor + secLen, cell, gap);
         break;
       }
       default: {
-        // Breather: a wavy line of coins.
+        // Breather: a sweeping line of coins.
         const len = Math.max(30, speed * 1.2);
-        const lane = pick(all.filter((l) => l !== this.trailLane));
-        this.coinTrail(this.trailStart + 2.5, this.cursor + len, this.trailLane, lane, { force: true });
+        const cell = this.chooseCell(ALL);
+        this.coinTrail(this.trailStart + 2.5, this.cursor + len, this.trailCell, cell, { force: true });
         this.trailStart = this.cursor + len;
-        this.trailLane = lane;
+        this.trailCell = cell;
         this.cursor += len + 8;
       }
     }
@@ -606,6 +696,7 @@ export class Track {
     if (game.spawning) {
       while (this.cursor < dist + SPAWN_AHEAD) this.generate(speed);
     }
+    const px = game.player.x;
     const py = game.player.y;
     const pz0 = dist - PLAYER_HALF_Z;
     const pz1 = dist + PLAYER_HALF_Z;
@@ -628,6 +719,7 @@ export class Track {
       for (const c of e.colliders) {
         if (e.absD + c.d1 < pz0 || e.absD + c.d0 > pz1) continue;
         if (c.y1 < py - PLAYER_HALF_Y || c.y0 > py + PLAYER_HALF_Y) continue;
+        if (c.x1 < px - PLAYER_HALF_X || c.x0 > px + PLAYER_HALF_X) continue;
         game.onHit(e);
         break;
       }
@@ -642,13 +734,14 @@ export class Track {
       if (c.pulled) {
         const k = 1 - Math.exp(-dt * 9);
         c.absD -= rel * k;
+        c.x += (px - c.x) * k;
         c.y += (py - c.y) * k;
         rel = c.absD - dist;
       }
-      c.mesh.position.set(0, c.y + Math.sin(t * 3 + c.absD * 0.3) * 0.08, -rel);
+      c.mesh.position.set(c.x, c.y + Math.sin(t * 3 + c.absD * 0.3) * 0.08, -rel);
       c.mesh.visible = rel > -1;
       c.mesh.rotation.y = t * 4 + c.absD * 0.2;
-      if (game.alive && Math.abs(rel) < 0.85 && Math.abs(c.y - py) < 0.95) {
+      if (game.alive && Math.abs(rel) < 0.85 && Math.abs(c.y - py) < 0.95 && Math.abs(c.x - px) < 0.95) {
         game.onCoin(c.mesh.position);
         this.releaseCoin(c);
         this.coins.splice(i, 1);
@@ -662,12 +755,12 @@ export class Track {
     for (let i = this.powers.length - 1; i >= 0; i--) {
       const p = this.powers[i];
       const rel = p.absD - dist;
-      p.mesh.position.set(0, p.y + Math.sin(t * 2.5) * 0.15, -rel);
+      p.mesh.position.set(p.x, p.y + Math.sin(t * 2.5) * 0.15, -rel);
       p.mesh.visible = rel > -1;
       p.mesh.userData.holder.rotation.y = t * 2.5;
       const pulse = 1 + Math.sin(t * 6) * 0.06;
       p.mesh.scale.setScalar(pulse);
-      if (game.alive && Math.abs(rel) < 1.1 && Math.abs(p.y - py) < 1.1) {
+      if (game.alive && Math.abs(rel) < 1.1 && Math.abs(p.y - py) < 1.1 && Math.abs(p.x - px) < 1.1) {
         game.onPower(p.type, p.mesh.position, p.mesh.userData.color);
         this.scene.remove(p.mesh);
         this.powers.splice(i, 1);

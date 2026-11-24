@@ -1,5 +1,5 @@
 import * as THREE from '../vendor/three.module.min.js';
-import { LANES } from './config.js';
+import { LANES, COLS } from './config.js';
 import { clamp, damp } from './utils.js';
 
 const FRESNEL_VERT = /* glsl */ `
@@ -183,6 +183,20 @@ export class Player {
     );
     this.shield.scale.set(1, 1, 1.3);
     this.root.add(this.shield);
+    // Second layer for a double shield: a golden geodesic cage around the bubble.
+    this.shieldCage = new THREE.Mesh(
+      new THREE.IcosahedronGeometry(1.42, 1),
+      new THREE.MeshBasicMaterial({
+        color: 0xffd23f, wireframe: true, transparent: true, opacity: 0,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      }),
+    );
+    this.shieldCage.scale.set(1, 1, 1.25);
+    this.root.add(this.shieldCage);
+    this.shieldBlue = new THREE.Color(0x4fd8ff);
+    this.shieldGold = new THREE.Color(0xffc23a);
+    this.shieldLevel = 0; // smoothed 0..2
+    this.shieldPop = 0;
 
     // Magnet aura: two counter-rotating rings
     this.magnet = new THREE.Group();
@@ -201,20 +215,32 @@ export class Player {
   }
 
   reset() {
-    this.lane = 1;
+    this.lane = 1; // row
+    this.col = 1;
     this.y = LANES[1];
+    this.x = COLS[1];
     this.vy = 0;
-    this.root.position.set(0, this.y, 0);
+    this.vx = 0;
+    this.root.position.set(this.x, this.y, 0);
+    this.root.rotation.set(0, 0, 0);
     this.root.visible = true;
     this.shield.visible = false;
     this.magnet.visible = false;
     this.shieldUniforms.opacity.value = 0;
+    this.shieldCage.material.opacity = 0;
+    this.shieldCage.visible = false;
+    this.shieldLevel = 0;
+    this.shieldPop = 0;
+    this.lastShields = 0;
   }
 
-  moveLane(delta) {
-    const next = clamp(this.lane + delta, 0, LANES.length - 1);
-    if (next === this.lane) return false;
-    this.lane = next;
+  // dx: -1 left / +1 right, dy: -1 up / +1 down. Returns true if anything changed.
+  move(dx, dy) {
+    const row = clamp(this.lane + dy, 0, LANES.length - 1);
+    const col = clamp(this.col + dx, 0, COLS.length - 1);
+    if (row === this.lane && col === this.col) return false;
+    this.lane = row;
+    this.col = col;
     return true;
   }
 
@@ -222,20 +248,38 @@ export class Player {
     return LANES[this.lane];
   }
 
+  get targetX() {
+    return COLS[this.col];
+  }
+
+  // Critically damped spring: eases in and out with no overshoot, and keeps
+  // momentum when the target changes mid-move, so direction changes are fluid.
+  spring(dt) {
+    const w = 17;
+    const steps = Math.max(1, Math.ceil(dt / 0.008));
+    const h = dt / steps;
+    for (let i = 0; i < steps; i++) {
+      this.vx += (w * w * (this.targetX - this.x) - 2 * w * this.vx) * h;
+      this.vy += (w * w * (this.targetY - this.y) - 2 * w * this.vy) * h;
+      this.x += this.vx * h;
+      this.y += this.vy * h;
+    }
+  }
+
   update(dt, t, o) {
-    // Smooth, springy vertical motion toward the target lane.
-    const prev = this.y;
-    this.y = damp(this.y, this.targetY, 13, dt);
-    this.vy = dt > 0 ? (this.y - prev) / dt : 0;
+    this.spring(dt);
 
     const bob = Math.sin(t * 5.2) * 0.07;
-    this.root.position.y = this.y + bob;
+    this.root.position.set(this.x + Math.sin(t * 1.7) * 0.03, this.y + bob, 0);
 
-    // Pitch with vertical velocity, gentle roll for a lively hover.
+    // Pitch with vertical velocity, bank and yaw into sideways moves.
     const tilt = clamp(this.vy * 0.045, -0.45, 0.45);
     this.body.rotation.x = damp(this.body.rotation.x, -1.22 + tilt, 10, dt);
     this.body.rotation.z = Math.sin(t * 2.1) * 0.07;
     this.body.rotation.y = Math.sin(t * 1.3) * 0.05;
+    const bank = clamp(-this.vx * 0.07, -0.6, 0.6);
+    this.root.rotation.z = damp(this.root.rotation.z, bank, 12, dt);
+    this.root.rotation.y = damp(this.root.rotation.y, clamp(-this.vx * 0.025, -0.25, 0.25), 12, dt);
 
     const boost = o.boost ? 1 : 0;
     // Legs flutter, arms sway, wings flex.
@@ -265,11 +309,27 @@ export class Player {
     }
     pos.needsUpdate = true;
 
-    // Shield bubble
+    // Shield bubble: blue with one charge, gold with a golden cage with two.
+    const shields = o.shields || 0;
+    if (shields !== this.lastShields) {
+      this.shieldPop = 1;
+      this.lastShields = shields;
+    }
+    this.shieldPop = Math.max(0, this.shieldPop - dt * 3);
+    this.shieldLevel = damp(this.shieldLevel, shields, 8, dt);
     this.shieldUniforms.time.value = t;
     const so = this.shieldUniforms.opacity;
-    so.value = damp(so.value, o.shield ? (o.shieldEnding ? 0.4 + 0.6 * (Math.sin(t * 20) > 0) : 1) : 0, 10, dt);
+    so.value = damp(so.value, shields > 0 ? 1 : 0, 10, dt);
     this.shield.visible = so.value > 0.02;
+    const gold = clamp(this.shieldLevel - 1, 0, 1);
+    this.shieldUniforms.color.value.copy(this.shieldBlue).lerp(this.shieldGold, gold);
+    const pop = 1 + Math.sin(this.shieldPop * Math.PI) * 0.18;
+    this.shield.scale.set(pop, pop, 1.3 * pop);
+    const cage = this.shieldCage;
+    cage.material.opacity = gold * (0.4 + Math.sin(t * 6) * 0.1);
+    cage.visible = cage.material.opacity > 0.02;
+    cage.rotation.set(t * 0.6, t * 0.9, 0);
+    cage.scale.set(pop, pop, 1.25 * pop);
 
     // Magnet aura
     this.magnet.visible = o.magnet;

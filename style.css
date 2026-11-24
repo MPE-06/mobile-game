@@ -146,32 +146,55 @@ html, body {
 .chip.shield .chip-icon::after { content: '◆'; }
 .chip.magnet .chip-icon::after { content: 'U'; }
 .chip.boost .chip-icon::after { content: '»'; }
+.pips { display: flex; gap: 4px; }
+.pips b {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  background: currentColor;
+  box-shadow: 0 0 8px currentColor;
+  transition: background 0.3s, opacity 0.3s, transform 0.3s;
+}
+.pips b + b { opacity: 0.2; transform: scale(0.8); }
+.chip.shield.double { color: #ffc23a; --c: #ffc23a; box-shadow: 0 0 14px rgba(255, 194, 58, 0.6); }
+.chip.shield.double .pips b + b { opacity: 1; transform: none; }
+.chip.shield { transition: color 0.3s, box-shadow 0.3s; }
 .chip-bar { width: 52px; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.2); overflow: hidden; }
 .chip-bar i { display: block; height: 100%; background: currentColor; transform-origin: left; }
 
 #hint {
   position: absolute;
-  right: 18px;
-  top: 50%;
-  transform: translateY(-50%);
+  left: 0;
+  right: 0;
+  bottom: 16%;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   opacity: 0;
   text-shadow: 0 2px 0 var(--shadow);
 }
-#hint.fade { animation: hint 4.5s ease-in-out forwards; }
+#hint.fade { animation: hint 5s ease-in-out forwards; }
 @keyframes hint { 0%, 80% { opacity: 1; } 100% { opacity: 0; } }
-.hint-text {
-  writing-mode: vertical-rl;
-  font-weight: 800;
-  font-size: 15px;
-  letter-spacing: 1px;
+.hint-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 30px);
+  grid-template-rows: repeat(3, 30px);
+  place-items: center;
 }
-.hint-arrow { font-size: 22px; color: var(--cyan); animation: nudge 0.8s ease-in-out infinite alternate; }
-.hint-arrow.down { animation-direction: alternate-reverse; }
-@keyframes nudge { from { transform: translateY(-5px); } to { transform: translateY(5px); } }
+.hint-pad .up { grid-area: 1 / 2; }
+.hint-pad .left { grid-area: 2 / 1; }
+.hint-dot { grid-area: 2 / 2; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 0 10px var(--cyan); }
+.hint-pad .right { grid-area: 2 / 3; }
+.hint-pad .down { grid-area: 3 / 2; }
+.hint-text { font-weight: 800; font-size: 16px; letter-spacing: 1px; }
+.hint-arrow { font-size: 20px; color: var(--cyan); }
+.hint-arrow.up { animation: nudgeY 0.8s ease-in-out infinite alternate; }
+.hint-arrow.down { animation: nudgeY 0.8s ease-in-out infinite alternate-reverse; }
+.hint-arrow.left { animation: nudgeX 0.8s ease-in-out infinite alternate; }
+.hint-arrow.right { animation: nudgeX 0.8s ease-in-out infinite alternate-reverse; }
+@keyframes nudgeY { from { transform: translateY(-4px); } to { transform: translateY(4px); } }
+@keyframes nudgeX { from { transform: translateX(-4px); } to { transform: translateX(4px); } }
 
 #toast {
   position: absolute;
@@ -186,6 +209,8 @@ html, body {
 }
 #toast.show { animation: toast 1.4s ease-out forwards; }
 #toast.shield { color: #8ee9ff; }
+#toast.shield2 { color: #ffd66b; }
+#toast.warn { color: #ff8a8a; }
 #toast.magnet { color: #ff8aa0; }
 #toast.boost { color: #ffc35a; }
 #toast.milestone { color: #fff; }
@@ -255,9 +280,9 @@ html, body {
 .menu-bottom { margin-top: auto; display: flex; flex-direction: column; align-items: center; gap: 10px; width: 100%; }
 .tagline { margin: 0 0 4px; font-size: 16px; font-weight: 600; text-shadow: 0 2px 0 var(--shadow); }
 .swipe-demo {
-  width: 40px;
-  height: 80px;
-  border-radius: 20px;
+  width: 84px;
+  height: 84px;
+  border-radius: 24px;
   border: 2px dashed rgba(255, 255, 255, 0.5);
   position: relative;
 }
@@ -270,12 +295,18 @@ html, body {
   border-radius: 50%;
   background: #fff;
   box-shadow: 0 0 14px var(--cyan);
-  animation: swipe 1.8s ease-in-out infinite;
+  top: 30px;
+  animation: swipe 3.2s ease-in-out infinite;
 }
 @keyframes swipe {
-  0%, 100% { top: 50%; transform: translateY(-50%); }
-  30% { top: 6px; transform: none; }
-  70% { top: calc(100% - 30px); transform: none; }
+  0%, 100% { top: 30px; left: 50%; }
+  12% { top: 4px; left: 50%; }
+  25% { top: 30px; left: 50%; }
+  37% { top: 30px; left: calc(100% - 16px); }
+  50% { top: 30px; left: 50%; }
+  62% { top: 56px; left: 50%; }
+  75% { top: 30px; left: 50%; }
+  87% { top: 30px; left: 16px; }
 }
 
 .btn {

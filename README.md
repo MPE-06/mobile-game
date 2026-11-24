@@ -1,7 +1,7 @@
 # Sky Rush
 
 A fast, colourful 3D endless flyer for phones (portrait, 9:16). You pilot **Zip**, a jetpack hero who
-rockets forward through a floating neon city. Swipe up and down to switch between three flight lanes,
+rockets forward through a floating neon city. Swipe up, down, left and right to move around a 3×3 flight grid,
 dodge obstacles, collect coins and grab power-ups. The run keeps speeding up until you crash.
 
 Built with plain HTML/CSS/JavaScript and [three.js](https://threejs.org) (vendored in `vendor/`, so no
@@ -33,28 +33,31 @@ manifest locks it to portrait.
 
 | Action | Touch | Keyboard |
 | --- | --- | --- |
-| Fly up one lane | Swipe / drag up | ↑ or W |
-| Fly down one lane | Swipe / drag down | ↓ or S |
+| Fly up / down | Swipe / drag up or down | ↑ ↓ or W S |
+| Fly left / right | Swipe / drag left or right | ← → or A D |
 | Pause | Pause button | Esc or P |
 | Start / restart | Tap "Play" | Space / Enter |
 
-A long drag keeps stepping, so you can slide from the top lane to the bottom in one motion. The
-character starts in the middle lane.
+A long drag keeps stepping, and you can change direction mid-drag (for example up, then right) without
+lifting your finger. Moves ease in and out on a spring, and Zip banks and pitches into each move. The
+character starts in the centre cell.
 
 ## Gameplay
 
 - **Score** is the distance flown in meters. **Coins** are counted separately and banked between runs.
 - **Speed** starts at 20 m/s and climbs towards 55 m/s as you go further.
 - **Obstacles** get harder over time:
-  - floating energy barriers, laser gates and floating rock islands that block one or two lanes
-  - moving sweeper bars and spiked drones that slide between two lanes
-  - enclosed tunnels with only one open lane
-  - zig-zag narrow passages where the open lane keeps shifting
+  - energy walls, laser gates and floating rocks that block rows, columns or individual cells
+  - sweeper bars that slide up and down, pillars that slide side to side, and spiked drones
+  - enclosed tunnels with only one open cell
+  - zig-zag narrow passages where the opening keeps shifting
   - fast chains of walls later in the run
-- Every obstacle pattern leaves at least one free lane, with enough time to reach it. Coin trails show
-  you the safe line.
+- Every obstacle pattern leaves at least one opening within two moves of the safe line, with enough
+  time to reach it. Coin trails show you the way.
 - **Power-ups**
-  - **Shield** (blue): absorbs one crash (15 s)
+  - **Shield**: lasts until it absorbs a crash, no timer. Grab a second one to stack two charges
+    (gold aura and cage). A hit takes one charge (gold drops back to blue); the HUD pips show how
+    many you have
   - **Coin magnet** (red): pulls in nearby coins (10 s)
   - **Turbo boost** (orange): big speed burst. You're invincible and smash through obstacles (5 s)
 - The sky goes from day to sunset to neon night as the run continues.

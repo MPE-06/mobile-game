@@ -1,5 +1,5 @@
 import * as THREE from '../vendor/three.module.min.js';
-import { LANES, POWER_TIME, BOOST_MULT, speedAt } from './config.js';
+import { LANES, POWER_TIME, MAX_SHIELDS, BOOST_MULT, speedAt } from './config.js';
 import { clamp, damp, rand, glowTexture, storage } from './utils.js';
 import { Player } from './player.js';
 import { World } from './world.js';
@@ -32,7 +32,7 @@ class Game {
     this.sfx = new Sfx();
 
     this.input = new Input(this.stage, {
-      onMove: (dir) => this.move(dir),
+      onMove: (dx, dy) => this.move(dx, dy),
       onPause: () => this.togglePause(),
     });
 
@@ -75,7 +75,7 @@ class Game {
     const aspect = w / h;
     this.camera.aspect = aspect;
     // Keep the horizontal field of view constant so obstacles always fill the width.
-    const halfH = Math.atan(Math.tan(THREE.MathUtils.degToRad(31)) * (9 / 16) / aspect);
+    const halfH = Math.atan(Math.tan(THREE.MathUtils.degToRad(33.5)) * (9 / 16) / aspect);
     this.fovBase = THREE.MathUtils.radToDeg(halfH * 2);
     this.camera.fov = this.fovBase;
     this.camera.updateProjectionMatrix();
@@ -125,7 +125,9 @@ class Game {
     for (const type of ['shield', 'magnet', 'boost']) {
       const el = document.createElement('div');
       el.className = `chip ${type}`;
-      el.innerHTML = `<span class="chip-icon"></span><span class="chip-bar"><i></i></span>`;
+      el.innerHTML = type === 'shield'
+        ? `<span class="chip-icon"></span><span class="pips"><b></b><b></b></span>`
+        : `<span class="chip-icon"></span><span class="chip-bar"><i></i></span>`;
       this.ui.powers.appendChild(el);
       this.chips[type] = { el, bar: el.querySelector('i') };
     }
@@ -161,6 +163,7 @@ class Game {
     this.shownCoins = -1;
     this.track.reset();
     this.player.reset();
+    this.camX = 0;
     this.fx.clear();
     this.bigFx.clear();
     this.world.setDistance(0, true);
@@ -214,9 +217,9 @@ class Game {
     else if (this.state === 'paused') this.resume();
   }
 
-  move(dir) {
+  move(dx, dy) {
     if (this.state !== 'playing' || !this.alive) return;
-    if (this.player.moveLane(dir)) this.sfx.whoosh(dir < 0);
+    if (this.player.move(dx, dy)) this.sfx.whoosh(dy < 0 || dx > 0);
   }
 
   // ---------- gameplay events ----------
@@ -230,28 +233,42 @@ class Game {
   }
 
   onPower(type, pos, color) {
-    this.powers[type] = POWER_TIME[type];
+    let label = { shield: 'Shield!', magnet: 'Coin Magnet!', boost: 'Turbo Boost!' }[type];
+    if (type === 'shield') {
+      // Shields stack (up to two) and never time out.
+      this.powers.shield = Math.min(MAX_SHIELDS, this.powers.shield + 1);
+      if (this.powers.shield === 2) {
+        label = 'Double Shield!';
+        color = 0xffc23a;
+      }
+    } else {
+      this.powers[type] = POWER_TIME[type];
+    }
     if (type === 'boost') {
       this.sfx.boost();
       this.shake = Math.max(this.shake, 0.25);
     } else this.sfx.power();
     this.bigFx.burst(pos.x, pos.y, pos.z, color, 24, 7, 0.6, 0.6);
-    this.toast({ shield: 'Shield!', magnet: 'Coin Magnet!', boost: 'Turbo Boost!' }[type], type);
+    this.toast(label, type === 'shield' && this.powers.shield === 2 ? 'shield2' : type);
   }
 
   onHit(e) {
+    const px = this.player.x;
     const py = this.player.y;
     if (this.powers.boost > 0) {
-      if (e.smashable) this.smash(e, py);
+      if (e.smashable) this.smash(e, px, py);
       return;
     }
     if (this.grace > 0) return;
     if (this.powers.shield > 0) {
-      this.powers.shield = 0;
+      // Absorb the hit with one charge; a double shield drops back to blue.
+      const wasDouble = this.powers.shield === 2;
+      this.powers.shield -= 1;
+      this.bigFx.burst(px, py, 0, wasDouble ? 0xffc23a : 0x4fd8ff, 30, 9, 0.7, 0.5);
+      this.toast(wasDouble ? 'Shield ×1' : 'Shield down!', wasDouble ? 'shield' : 'warn');
       this.grace = 1.3;
       this.sfx.shieldBreak();
-      this.bigFx.burst(0, py, 0, 0x4fd8ff, 40, 9, 0.7, 0.5);
-      if (e.smashable) this.smash(e, py);
+      if (e.smashable) this.smash(e, px, py);
       this.shake = 0.4;
       this.vibrate(40);
       return;
@@ -259,14 +276,16 @@ class Game {
     this.die();
   }
 
-  smash(e, py) {
+  smash(e, px, py) {
     this.track.smash(e);
     this.sfx.smash();
     this.shake = Math.max(this.shake, 0.3);
     for (const c of e.colliders) {
+      if (c.y1 < py - 1.5 || c.y0 > py + 1.5 || c.x1 < px - 1.5 || c.x0 > px + 1.5) continue;
+      const cx = clamp(px, c.x0, c.x1);
       const cy = clamp(py, c.y0, c.y1);
-      this.bigFx.burst(0, cy, -0.8, e.color || 0xffffff, 14, 10, 0.7, 1);
-      this.fx.burst(0, cy, -0.8, 0xffffff, 20, 12, 0.5, 1);
+      this.bigFx.burst(cx, cy, -0.8, e.color || 0xffffff, 14, 10, 0.7, 1);
+      this.fx.burst(cx, cy, -0.8, 0xffffff, 20, 12, 0.5, 1);
     }
   }
 
@@ -277,10 +296,11 @@ class Game {
     this.deathTimer = 0;
     this.timeScale = 0.25;
     this.shake = 0.8;
+    const px = this.player.x;
     const py = this.player.y;
-    this.bigFx.burst(0, py, 0, 0xff7a1a, 50, 10, 1.2, 0.2);
-    this.bigFx.burst(0, py, 0, 0xffd23f, 30, 6, 1.0, 0.2);
-    this.fx.burst(0, py, 0, 0xffffff, 80, 14, 0.9, 0.2);
+    this.bigFx.burst(px, py, 0, 0xff7a1a, 50, 10, 1.2, 0.2);
+    this.bigFx.burst(px, py, 0, 0xffd23f, 30, 6, 1.0, 0.2);
+    this.fx.burst(px, py, 0, 0xffffff, 80, 14, 0.9, 0.2);
     this.sfx.crash();
     this.vibrate([60, 40, 120]);
     this.show('hud', false);
@@ -328,7 +348,7 @@ class Game {
     const t = this.t;
 
     if (this.state === 'playing') {
-      for (const k of ['shield', 'magnet', 'boost']) {
+      for (const k of ['magnet', 'boost']) {
         if (this.powers[k] > 0) {
           this.powers[k] = Math.max(0, this.powers[k] - dt);
           if (k === 'boost' && this.powers[k] === 0) this.grace = Math.max(this.grace, 1.2);
@@ -361,8 +381,7 @@ class Game {
       this.player.update(dt, t, {
         speed: this.speed,
         boost: this.powers.boost > 0,
-        shield: this.powers.shield > 0,
-        shieldEnding: this.powers.shield > 0 && this.powers.shield < 2.5,
+        shields: this.state === 'menu' ? 0 : this.powers.shield,
         magnet: this.powers.magnet > 0,
         grace: this.grace > 0 && this.powers.boost <= 0,
         dead: !this.alive && this.state !== 'menu',
@@ -399,12 +418,17 @@ class Game {
   updateCamera(dt, raw) {
     const cam = this.camera;
     const py = this.player.root.position.y;
-    const camY = damp(cam.position.y, py * 0.35 + 1.4, 6, dt);
+    const px = this.player.root.position.x;
+    // Follow the player partly, so sideways and vertical moves read clearly on screen.
+    this.camX = damp(this.camX ?? 0, px * 0.45, 6, dt);
+    this.camY = damp(this.camY ?? 1.4, py * 0.35 + 1.4, 6, dt);
+    const camX = this.camX;
+    const camY = this.camY;
     this.shake = Math.max(0, this.shake - raw * 1.6);
     const s = this.shake * this.shake;
-    cam.position.set(rand(-1, 1) * s * 0.6, camY + rand(-1, 1) * s * 0.6, 7.4);
-    cam.lookAt(0, camY - 3.0, -12);
-    cam.rotation.z += Math.sin(this.t * 0.7) * 0.01 - this.player.vy * 0.004;
+    cam.position.set(camX + rand(-1, 1) * s * 0.6, camY + rand(-1, 1) * s * 0.6, 7.4);
+    cam.lookAt(camX * 0.9, camY - 3.0, -12);
+    cam.rotation.z += Math.sin(this.t * 0.7) * 0.01 - this.player.vy * 0.004 - this.player.vx * 0.006;
     const fov = this.fovBase + clamp((this.speed - 20) * 0.18, 0, 7) + (this.boostMul - 1) * 12;
     if (Math.abs(cam.fov - fov) > 0.01) {
       cam.fov = damp(cam.fov, fov, 4, dt);
@@ -422,7 +446,12 @@ class Game {
       this.ui.coins.textContent = this.coins.toLocaleString();
       this.shownCoins = this.coins;
     }
+    const sh = this.powers.shield;
+    const shieldChip = this.chips.shield;
+    shieldChip.el.classList.toggle('on', sh > 0);
+    shieldChip.el.classList.toggle('double', sh >= 2);
     for (const [type, chip] of Object.entries(this.chips)) {
+      if (type === 'shield') continue;
       const v = this.powers[type];
       chip.el.classList.toggle('on', v > 0);
       chip.el.classList.toggle('ending', v > 0 && v < 2);
